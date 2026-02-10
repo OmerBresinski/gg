@@ -1,0 +1,274 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# gg — interactive git worktree session launcher
+# - pick/create a branch via fzf
+# - reuse existing worktree if branch is already checked out elsewhere
+# - otherwise create/use worktree at: <repo>/.worktrees/<branch-sanitized>
+# - launch Zed + Ghostty(opencode) normally (no fullscreen / tiling)
+
+WORKTREES_DIR_NAME=".worktrees"
+
+die() { echo "gg: $*" >&2; exit 1; }
+need_cmd() { command -v "$1" >/dev/null 2>&1 || die "$1 not found"; }
+
+need_cmd git
+need_cmd fzf
+
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+[[ -n "$repo_root" ]] || die "not inside a git repo"
+cd "$repo_root"
+
+# Detect base branch: GG_BASE_BRANCH > origin/HEAD > main > master
+detect_base_branch() {
+  if [[ -n "${GG_BASE_BRANCH:-}" ]]; then
+    echo "$GG_BASE_BRANCH"
+    return
+  fi
+  # Try to get default branch from origin/HEAD
+  local remote_head
+  remote_head="$(git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null || true)"
+  if [[ -n "$remote_head" ]]; then
+    echo "${remote_head#refs/remotes/origin/}"
+    return
+  fi
+  # Fall back to common defaults
+  for candidate in main master; do
+    if git show-ref --verify --quiet "refs/heads/$candidate" || \
+       git show-ref --verify --quiet "refs/remotes/origin/$candidate"; then
+      echo "$candidate"
+      return
+    fi
+  done
+  echo "main"  # last resort default
+}
+base_branch="$(detect_base_branch)"
+
+# Collect branches (local + remote) for picker
+branches="$(
+  {
+    git for-each-ref --format='%(refname:short)' refs/heads
+    git for-each-ref --format='origin/%(refname:short)' refs/remotes/origin 2>/dev/null \
+      | sed 's#^origin/origin/#origin/#' \
+      | grep -vE '^origin/HEAD$' || true
+  } | awk 'NF' | sort -u
+)"
+
+# Minimal branch picker
+selection="$(
+  printf "%s\n" "$branches" \
+  | fzf --height=40% \
+        --reverse \
+        --no-border \
+        --prompt="  search or create branch... " \
+        --pointer=" ›" \
+        --marker="·" \
+        --info=hidden \
+        --padding=1,0 \
+        --margin=2,20% \
+        --color="bg:-1,bg+:#27272a,fg:#71717a,fg+:#a1a1aa,hl:#a78bfa,hl+:#c4b5fd,pointer:#a78bfa,prompt:#52525b,marker:#a78bfa,gutter:-1" \
+        --highlight-line \
+        --bind='change:transform-prompt:if [ -n {q} ]; then echo "  "; else echo "  search or create branch... "; fi' \
+        --print-query || true
+)"
+
+# If user pressed Ctrl-C or Esc, selection will be empty and query will be empty
+[[ -n "$selection" ]] || die "cancelled"
+
+query="$(printf "%s" "$selection" | sed -n '1p')"
+picked="$(printf "%s" "$selection" | sed -n '2p')"
+
+# Determine branch:
+# - If user selected an item, use it.
+# - Otherwise, use whatever they typed (query) as the new branch name.
+branch=""
+if [[ -n "${picked:-}" ]]; then
+  branch="${picked#origin/}"  # normalize origin/foo -> foo
+else
+  [[ -n "${query:-}" ]] || die "no branch selected / typed"
+  branch="$query"
+fi
+
+# Choose editor/tool(s) to launch (multi-select with Tab, Enter to launch)
+editor_choices="$(
+  printf "cursor\nopencode\nclaude" \
+  | fzf --height=8 \
+        --reverse \
+        --no-border \
+        --multi \
+        --prompt="  Tab to select, Enter to launch " \
+        --pointer=" ›" \
+        --marker="✓ " \
+        --info=hidden \
+        --padding=1,0 \
+        --margin=2,20% \
+        --color="bg:-1,bg+:#27272a,fg:#71717a,fg+:#a1a1aa,hl:#a78bfa,hl+:#c4b5fd,pointer:#a78bfa,prompt:#52525b,marker:#22c55e,gutter:-1" \
+        --bind="start:select-all,enter:accept" \
+        --highlight-line || true
+)"
+
+[[ -n "$editor_choices" ]] || die "cancelled"
+
+# Parse selections
+launch_cursor=false
+launch_opencode=false
+launch_claude=false
+while IFS= read -r choice; do
+  case "$choice" in
+    cursor) launch_cursor=true ;;
+    opencode) launch_opencode=true ;;
+    claude) launch_claude=true ;;
+  esac
+done <<< "$editor_choices"
+
+# Reuse existing worktree if branch already checked out
+existing_wt="$(
+  git worktree list --porcelain \
+  | awk -v b="$branch" '
+      $1=="worktree" { wt=$2 }
+      $1=="branch" && $2=="refs/heads/"b { print wt }
+    '
+)"
+
+if [[ -n "${existing_wt:-}" ]]; then
+  wt_dir="$existing_wt"
+else
+  safe_branch="${branch//\//-}"
+  wt_dir="$repo_root/$WORKTREES_DIR_NAME/$safe_branch"
+  mkdir -p "$repo_root/$WORKTREES_DIR_NAME"
+
+  if git show-ref --verify --quiet "refs/heads/$branch"; then
+    git worktree add "$wt_dir" "$branch" 2>/dev/null
+  elif git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+    git worktree add -b "$branch" "$wt_dir" "origin/$branch" 2>/dev/null
+  else
+    # New branch from base
+    if git show-ref --verify --quiet "refs/heads/$base_branch"; then
+      base_ref="$base_branch"
+    elif git show-ref --verify --quiet "refs/remotes/origin/$base_branch"; then
+      base_ref="origin/$base_branch"
+    else
+      die "base branch '$base_branch' not found (set GG_BASE_BRANCH or create it)"
+    fi
+    git worktree add -b "$branch" "$wt_dir" "$base_ref" 2>/dev/null
+  fi
+fi
+
+# Count how many tools are selected
+tool_count=0
+$launch_cursor && ((tool_count++)) || true
+$launch_opencode && ((tool_count++)) || true
+$launch_claude && ((tool_count++)) || true
+
+# Launch the selected tool(s)
+if [[ $tool_count -gt 1 ]]; then
+  # Multiple tools selected - launch them and arrange windows
+  
+  # Launch tools in background
+  $launch_cursor && code "$wt_dir" &
+  $launch_opencode && (cd "$wt_dir" && ghostty -e opencode) &
+  $launch_claude && (cd "$wt_dir" && ghostty -e claude) &
+  
+  sleep 2
+  
+  # Build AppleScript dynamically based on selection
+  apps_to_position=()
+  $launch_cursor && apps_to_position+=("Cursor")
+  $launch_opencode && apps_to_position+=("Ghostty")
+  $launch_claude && apps_to_position+=("Ghostty")
+  
+  # Position windows side by side (2 apps) or thirds (3 apps)
+  osascript <<APPLESCRIPT
+use framework "AppKit"
+use scripting additions
+
+-- Get the main screen's visible frame (accounts for menu bar and dock)
+set screenFrame to current application's NSScreen's mainScreen()'s visibleFrame()
+set screenX to (screenFrame's origin's x) as integer
+set screenY to (screenFrame's origin's y) as integer
+set screenWidth to (screenFrame's |size|()'s width) as integer
+set screenHeight to (screenFrame's |size|()'s height) as integer
+
+-- Calculate the top of the visible area
+set fullHeight to (current application's NSScreen's mainScreen()'s frame()'s |size|()'s height) as integer
+set topY to fullHeight - screenHeight - screenY
+
+set toolCount to $tool_count
+
+if toolCount = 2 then
+    set sliceWidth to screenWidth / 2
+else
+    set sliceWidth to screenWidth / 3
+end if
+
+set currentX to screenX
+
+$(if $launch_cursor; then cat <<'EOF'
+-- Position Cursor
+tell application "Cursor"
+    activate
+    delay 0.3
+    set bounds of front window to {currentX, topY, currentX + sliceWidth, topY + screenHeight}
+end tell
+set currentX to currentX + sliceWidth
+EOF
+fi)
+
+$(if $launch_opencode; then cat <<'EOF'
+-- Position Ghostty (opencode)
+tell application "Ghostty"
+    activate
+    delay 0.3
+    set bounds of front window to {currentX, topY, currentX + sliceWidth, topY + screenHeight}
+end tell
+set currentX to currentX + sliceWidth
+EOF
+fi)
+
+$(if $launch_claude; then cat <<'EOF'
+-- Position Ghostty (claude) - get second window if opencode also running
+tell application "Ghostty"
+    activate
+    delay 0.3
+EOF
+if $launch_opencode; then cat <<'EOF2'
+    if (count of windows) > 1 then
+        set bounds of window 2 to {currentX, topY, currentX + sliceWidth, topY + screenHeight}
+    end if
+EOF2
+else cat <<'EOF3'
+    set bounds of front window to {currentX, topY, currentX + sliceWidth, topY + screenHeight}
+EOF3
+fi
+cat <<'EOF4'
+end tell
+EOF4
+fi)
+
+-- Focus first app
+$(if $launch_cursor; then echo 'tell application "Cursor" to activate'; elif $launch_opencode; then echo 'tell application "Ghostty" to activate'; elif $launch_claude; then echo 'tell application "Ghostty" to activate'; fi)
+APPLESCRIPT
+
+  echo "gg: Session ready!"
+  echo "    Worktree: $wt_dir"
+  echo "    Branch:   $branch"
+
+elif $launch_cursor; then
+  code "$wt_dir"
+  echo "gg: Session ready!"
+  echo "    Worktree: $wt_dir"
+  echo "    Branch:   $branch"
+
+elif $launch_opencode; then
+  echo "gg: Launching opencode in: $wt_dir"
+  echo "    Branch: $branch"
+  cd "$wt_dir" && exec opencode
+
+elif $launch_claude; then
+  echo "gg: Launching claude in: $wt_dir"
+  echo "    Branch: $branch"
+  cd "$wt_dir" && exec claude
+
+else
+  die "no tool selected"
+fi

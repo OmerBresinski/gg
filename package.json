@@ -1,0 +1,32 @@
+{
+  "name": "@omerbres/gg",
+  "version": "1.0.0",
+  "description": "Interactive git worktree session launcher with Cursor, OpenCode, and Claude Code support",
+  "bin": {
+    "gg": "./bin/gg"
+  },
+  "files": [
+    "bin"
+  ],
+  "keywords": [
+    "git",
+    "worktree",
+    "fzf",
+    "cursor",
+    "opencode",
+    "claude",
+    "cli"
+  ],
+  "author": "Omer Bres",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/omerbres/gg"
+  },
+  "os": [
+    "darwin"
+  ],
+  "engines": {
+    "node": ">=14"
+  }
+}
