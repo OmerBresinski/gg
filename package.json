@@ -1,9 +1,9 @@
 {
   "name": "@omerbres/gg",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Interactive git worktree session launcher with Cursor, OpenCode, and Claude Code support",
   "bin": {
-    "gg": "./bin/gg"
+    "ggw": "./bin/ggw"
   },
   "files": [
     "bin"

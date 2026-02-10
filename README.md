@@ -1,4 +1,4 @@
-# gg
+# ggw
 
 Interactive git worktree session launcher. Pick or create a branch via fzf, then launch your preferred editor(s).
 
@@ -21,10 +21,10 @@ npm install -g @omerbres/gg
 
 ## Usage
 
-Run `gg` from any git repository:
+Run `ggw` from any git repository:
 
 ```bash
-gg
+ggw
 ```
 
 1. **Select a branch** - Use fzf to pick an existing branch or type a new branch name
