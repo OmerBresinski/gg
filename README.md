@@ -12,12 +12,12 @@ npm install -g @omerbres/gg
 
 - macOS (uses AppleScript for window management)
 - [git](https://git-scm.com/)
-- [fzf](https://github.com/junegunn/fzf)
+- [fzf](https://github.com/junegunn/fzf) - `brew install fzf`
+- [Ghostty](https://ghostty.org/) (for terminal-based tools)
 - One or more of:
   - [Cursor](https://cursor.sh/)
   - [OpenCode](https://opencode.ai/)
   - [Claude Code](https://claude.ai/code)
-- [Ghostty](https://ghostty.org/) (for terminal-based tools)
 
 ## Usage
 
